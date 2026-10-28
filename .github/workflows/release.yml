@@ -119,7 +119,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: macos
+          path: artifacts/macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: artifacts/linux
       - name: Flatten
         run: |
           mkdir -p dist
