@@ -313,7 +313,7 @@ impl eframe::App for BondApp {
             }
             egui::ScrollArea::vertical()
                 .max_height(140.0)
-                .id_salt("ifaces")
+                .id_source("ifaces")
                 .show(ui, |ui| {
                     for (iface, on) in self.interfaces.iter().zip(self.selected.iter_mut()) {
                         ui.checkbox(on, format!("{}  ({})", iface.name, iface.ip));
@@ -342,7 +342,7 @@ impl eframe::App for BondApp {
 
             egui::ScrollArea::vertical()
                 .max_height(160.0)
-                .id_salt("routes")
+                .id_source("routes")
                 .show(ui, |ui| {
                     for route in self.routes.iter_mut() {
                         ui.horizontal(|ui| {
