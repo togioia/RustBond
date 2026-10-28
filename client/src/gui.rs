@@ -112,6 +112,8 @@ struct BondApp {
     message: String,
     #[cfg(feature = "tray")]
     tray: Option<Tray>,
+    #[cfg(feature = "tray")]
+    tray_ready: bool,
 }
 
 impl BondApp {
@@ -149,7 +151,9 @@ impl BondApp {
             visible: true,
             message: String::new(),
             #[cfg(feature = "tray")]
-            tray: build_tray(),
+            tray: None,
+            #[cfg(feature = "tray")]
+            tray_ready: false,
         }
     }
 
@@ -270,6 +274,15 @@ impl BondApp {
 
 impl eframe::App for BondApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // tray-icon touches NSApplication: it must not run before winit owns the
+        // event loop, or winit aborts with "requires control over the principal
+        // class". The first update() is safely inside the loop.
+        #[cfg(feature = "tray")]
+        if !self.tray_ready {
+            self.tray = build_tray();
+            self.tray_ready = true;
+        }
+
         self.poll_menu(ctx);
 
         // Closing the window only hides it: RustBond lives in the menu bar.
