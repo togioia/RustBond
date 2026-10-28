@@ -25,7 +25,8 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
         run: |
           mkdir -p dist out
-          gh run download "$RUN_ID" -D dist -R "${{ github.repository }}"
+          gh run download "$RUN_ID" -n macos -D dist -R "${{ github.repository }}"
+          gh run download "$RUN_ID" -n linux -D dist -R "${{ github.repository }}"
           find dist -type f -exec cp {} out/ \;
           ls -lh out
 
