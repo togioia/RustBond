@@ -27,6 +27,13 @@ data:
     proto = "udp"
     local_port = 15353
     targets = ["kube-dns.kube-system.svc.cluster.local:53"]
+
+    # TCP: test HTTP, utile per verificare il tunnel end-to-end
+    [[routes]]
+    id = 3
+    proto = "tcp"
+    local_port = 18080
+    targets = ["traefik.kube-system.svc.cluster.local:80"]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -123,12 +130,13 @@ metadata:
   labels:
     app.kubernetes.io/name: rustbond
 spec:
-  type: NodePort
+  # klipper-lb (integrato in k3s) apre la porta 5000 su TUTTI i nodi:
+  # basta puntare il client all'IP di worker-oracle-01 o di un altro nodo.
+  type: LoadBalancer
   selector:
     app.kubernetes.io/name: rustbond
   ports:
     - name: tunnel
       port: 5000
       targetPort: tunnel
-      nodePort: 30500
       protocol: TCP

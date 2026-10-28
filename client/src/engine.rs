@@ -340,11 +340,15 @@ async fn serve_udp(
 
     shared.udp_sock.lock().await.insert(stream_id, sock.clone());
 
-    let mut bound_on = match open_stream(&pool, &shared, stream_id, route.id, kind::UDP_BIND).await {
-        Some(idx) => idx,
-        None => {
-            eprintln!("route {}: udp bind failed", route.id);
-            return Err(anyhow!("udp bind failed for route {}", route.id));
+    // Retry until a transport accepts the bind: at startup the supervisor may
+    // still be connecting, and returning here would leave UDP dead forever.
+    let mut bound_on = loop {
+        match open_stream(&pool, &shared, stream_id, route.id, kind::UDP_BIND).await {
+            Some(idx) => break idx,
+            None => {
+                set_status(&status, format!("udp route {}: waiting for transport", route.id));
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
         }
     };
 
@@ -439,19 +443,26 @@ pub async fn run(cfg: AppConfig, status: StatusHandle) -> Result<()> {
         status.clone(),
     );
 
-    // Give the first transport a moment, so "Start" reports a real failure.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let connected = {
-        let mut any = false;
-        for slot in pool.slots.iter() {
-            if slot.tx.lock().await.as_ref().map(|t| !t.is_closed()) == Some(true) {
-                any = true;
+    // Wait for the first transport before binding local listeners: UDP routes
+    // bind only once (unlike TCP, which retries per accepted connection).
+    {
+        let mut waited = 0u64;
+        while waited < 15_000 {
+            let mut any = false;
+            for slot in pool.slots.iter() {
+                if slot.tx.lock().await.as_ref().map(|t| !t.is_closed()) == Some(true) {
+                    any = true;
+                }
             }
+            if any {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            waited += 250;
         }
-        any
-    };
-    if !connected {
-        set_status(&status, "waiting for server...".to_string());
+        if waited >= 15_000 {
+            set_status(&status, "waiting for server...".to_string());
+        }
     }
 
     let next_sid = Arc::new(AtomicU32::new(1));
