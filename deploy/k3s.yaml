@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rustbond
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rustbond-config
+  namespace: rustbond
+data:
+  config.toml: |
+    server_addr = "0.0.0.0:5000"
+    key = ""
+    interfaces = []
+
+    # TCP: raggiungere l'API server dal Mac via 127.0.0.1:15443
+    [[routes]]
+    id = 1
+    proto = "tcp"
+    local_port = 15443
+    targets = ["kubernetes.default.svc.cluster.local:443"]
+
+    # UDP: DNS cluster dal Mac via 127.0.0.1:15353
+    [[routes]]
+    id = 2
+    proto = "udp"
+    local_port = 15353
+    targets = ["kube-dns.kube-system.svc.cluster.local:53"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustbond
+  namespace: rustbond
+  labels:
+    app.kubernetes.io/name: rustbond
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rustbond
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rustbond
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: ["algios-b602", "worker-oracle-01"]
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: rustbond
+      containers:
+        - name: server
+          image: ghcr.io/togioia/rustbond:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LISTEN
+              value: "0.0.0.0:5000"
+            - name: CONFIG
+              value: /etc/rustbond/config.toml
+            - name: RNB_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustbond-key
+                  key: key
+          ports:
+            - name: tunnel
+              containerPort: 5000
+          readinessProbe:
+            tcpSocket:
+              port: tunnel
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: tunnel
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 250m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rustbond
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: rustbond-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustbond
+  namespace: rustbond
+  labels:
+    app.kubernetes.io/name: rustbond
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: rustbond
+  ports:
+    - name: tunnel
+      port: 5000
+      targetPort: tunnel
+      nodePort: 30500
+      protocol: TCP

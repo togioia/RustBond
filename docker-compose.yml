@@ -1,0 +1,22 @@
+services:
+  rustbond:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: ghcr.io/togioia/rustbond:0.1.0
+    restart: unless-stopped
+    environment:
+      LISTEN: 0.0.0.0:5000
+      CONFIG: /etc/rustbond/config.toml
+      RNB_KEY: ${RNB_KEY:?set RNB_KEY in your environment}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./examples/server.toml:/etc/rustbond/config.toml:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 64m
+    pids_limit: 128

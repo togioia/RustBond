@@ -1,0 +1,18 @@
+[package]
+name = "rnb-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RustBond relay server (static musl binary, made for edge nodes)"
+
+[[bin]]
+name = "rustbond-server"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+rnb-shared = { path = "../shared" }

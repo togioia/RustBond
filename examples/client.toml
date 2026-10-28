@@ -1,0 +1,15 @@
+server_addr = "127.0.0.1:5000"
+key = "change-me"
+interfaces = []
+
+[[routes]]
+id = 1
+proto = "tcp"
+local_port = 8888
+targets = ["127.0.0.1:5432", "backup.internal:5432"]
+
+[[routes]]
+id = 2
+proto = "udp"
+local_port = 8889
+targets = ["127.0.0.1:5353"]
