@@ -11,8 +11,9 @@ name = "rustbond"
 path = "src/main.rs"
 
 [features]
-default = ["gui"]
-gui = ["dep:eframe", "dep:tray-icon"]
+default = ["gui", "tray"]
+gui = ["dep:eframe"]
+tray = ["dep:tray-icon"]
 
 [dependencies]
 tokio = { workspace = true }

@@ -36,6 +36,7 @@ struct RouteRow {
     targets: String,
 }
 
+#[cfg(feature = "tray")]
 struct Tray {
     _icon: tray_icon::TrayIcon,
     start: tray_icon::menu::MenuItem,
@@ -45,6 +46,7 @@ struct Tray {
 }
 
 /// 16x16 RGBA icon: a simple rounded blue dot, no asset files needed.
+#[cfg(feature = "tray")]
 fn tray_rgba() -> Vec<u8> {
     let (w, h) = (16u32, 16u32);
     let mut buf = Vec::with_capacity((w * h * 4) as usize);
@@ -67,6 +69,7 @@ fn tray_rgba() -> Vec<u8> {
     buf
 }
 
+#[cfg(feature = "tray")]
 fn build_tray() -> Option<Tray> {
     use tray_icon::menu::{Menu, MenuItem};
     use tray_icon::{Icon, TrayIconBuilder};
@@ -107,6 +110,7 @@ struct BondApp {
     running: bool,
     visible: bool,
     message: String,
+    #[cfg(feature = "tray")]
     tray: Option<Tray>,
 }
 
@@ -144,6 +148,7 @@ impl BondApp {
             running: false,
             visible: true,
             message: String::new(),
+            #[cfg(feature = "tray")]
             tray: build_tray(),
         }
     }
@@ -216,12 +221,14 @@ impl BondApp {
         self.message = "stopped".into();
     }
 
+    #[allow(unused_mut)]
     fn poll_menu(&mut self, ctx: &egui::Context) {
         let mut want_start = false;
         let mut want_stop = false;
         let mut want_show = false;
         let mut want_quit = false;
 
+        #[cfg(feature = "tray")]
         if let Some(tray) = &self.tray {
             while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
                 if event.id == tray.start.id() {
