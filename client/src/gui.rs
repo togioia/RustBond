@@ -1,9 +1,9 @@
-//! macOS menu bar UI: a liquid-glass panel with live per-link traffic.
+//! macOS menu bar UI: a glass-style panel with live per-link traffic.
 //!
-//! The window is transparent and undecorated; on macOS 26 we ask AppKit for a
-//! real `NSGlassEffectView` behind our content (older systems fall back to the
-//! classic `NSVisualEffectView` vibrancy). Everything else — cards, pills,
-//! specular highlights — is painted by egui on top of that backdrop.
+//! The window is transparent and undecorated. The panel background — tint,
+//! border and a single top highlight — is painted by egui itself. Native
+//! backdrop blur is optional: when it cannot be attached, the panel falls back
+//! to a fully opaque, readable background.
 
 use std::time::Duration;
 
@@ -17,7 +17,6 @@ use crate::{config, engine, net, sysproxy};
 
 const RADIUS: f32 = 22.0;
 const INNER_RADIUS: f32 = 14.0;
-const PANEL_MARGIN: f32 = 8.0;
 const FOOTER_HEIGHT: f32 = 132.0;
 
 fn accent() -> Color32 {
@@ -192,6 +191,7 @@ struct BondApp {
     proxy_guard: Option<sysproxy::Guard>,
     handle: Option<tokio::task::AbortHandle>,
     running: bool,
+    native_blur: bool,
     visible: bool,
     message: String,
     #[cfg(feature = "tray")]
@@ -237,6 +237,7 @@ impl BondApp {
             proxy_guard: None,
             handle: None,
             running: false,
+            native_blur: false,
             visible: true,
             message: String::new(),
             #[cfg(feature = "tray")]
@@ -431,7 +432,7 @@ impl eframe::App for BondApp {
                     .inner_margin(Margin::same(26.0)),
             )
             .show(ctx, |ui| {
-                paint_backdrop(ui.painter(), screen.shrink(PANEL_MARGIN));
+                paint_backdrop(ui.painter(), screen, self.native_blur);
                 self.body(ui, ctx);
             });
 
@@ -676,45 +677,25 @@ enum BtnKind {
     Danger,
 }
 
-fn paint_backdrop(painter: &egui::Painter, rect: Rect) {
-    for (grow, alpha) in [(3.0f32, 24u8), (7.0, 14), (12.0, 8), (18.0, 4)] {
-        painter.rect_filled(
-            rect.expand(grow),
-            Rounding::same(RADIUS + grow),
-            Color32::from_black_alpha(alpha),
-        );
-    }
-
-    // Opaque: text must stay crisp. The "glass" is in the highlights,
-    // translucency of the cards and the specular edges.
-    let base = Color32::from_rgb(15, 19, 30);
+fn paint_backdrop(painter: &egui::Painter, rect: Rect, native_blur: bool) {
+    let tint = if native_blur {
+        Color32::from_rgba_unmultiplied(14, 18, 30, 90) // lascia passare il blur
+    } else {
+        Color32::from_rgb(15, 19, 30) // fallback opaco
+    };
     painter.rect(
         rect,
         Rounding::same(RADIUS),
-        base,
-        Stroke::new(1.0_f32, Color32::from_white_alpha(34)),
+        tint,
+        Stroke::new(1.0_f32, Color32::from_white_alpha(30)),
     );
-
-    // Specular highlight along the top edge + a faint glass sheen.
+    // Un solo filo di luce sul bordo superiore.
     painter.line_segment(
         [
             rect.left_top() + Vec2::new(RADIUS, 1.0),
             rect.right_top() + Vec2::new(-RADIUS, 1.0),
         ],
-        Stroke::new(1.0_f32, Color32::from_white_alpha(84)),
-    );
-    painter.rect_filled(
-        Rect::from_min_max(
-            rect.min + Vec2::splat(1.0),
-            egui::pos2(rect.max.x - 1.0, rect.min.y + 96.0),
-        ),
-        Rounding {
-            nw: RADIUS,
-            ne: RADIUS,
-            sw: 0.0,
-            se: 0.0,
-        },
-        Color32::from_white_alpha(6),
+        Stroke::new(1.0_f32, Color32::from_white_alpha(70)),
     );
 }
 
@@ -790,12 +771,6 @@ fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         .stroke(Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))
         .rounding(Rounding::same(16.0))
         .inner_margin(Margin::same(14.0))
-        .shadow(egui::epaint::Shadow {
-            offset: Vec2::new(0.0, 8.0),
-            blur: 20.0,
-            spread: 0.0,
-            color: Color32::from_black_alpha(45),
-        })
         .show(ui, add)
         .inner
 }
@@ -947,26 +922,11 @@ fn glass_button(ui: &mut egui::Ui, label: &str, kind: BtnKind) -> egui::Response
         bg = bg.gamma_multiply(0.88);
     }
 
-    ui.painter().rect_filled(
-        rect.translate(Vec2::new(0.0, 4.0)),
-        Rounding::same(INNER_RADIUS),
-        Color32::from_black_alpha(60),
-    );
     ui.painter().rect(
         rect,
         Rounding::same(INNER_RADIUS),
         bg,
         Stroke::new(1.0_f32, Color32::from_white_alpha(56)),
-    );
-    ui.painter().rect_filled(
-        Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.center().y)),
-        Rounding {
-            nw: INNER_RADIUS,
-            ne: INNER_RADIUS,
-            sw: 0.0,
-            se: 0.0,
-        },
-        Color32::from_white_alpha(16),
     );
     ui.painter().text(
         rect.center(),
