@@ -43,7 +43,9 @@ metadata:
   labels:
     app.kubernetes.io/name: rustbond
 spec:
-  replicas: 2
+  # Nota: 1 replica pinnata su b602. Il pod su worker-oracle-01 non
+  # instrada correttamente il traffico del tunnel (TCP e UDP muti).
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: rustbond
@@ -65,7 +67,7 @@ spec:
               - matchExpressions:
                   - key: kubernetes.io/hostname
                     operator: In
-                    values: ["algios-b602", "worker-oracle-01"]
+                    values: ["algios-b602"]
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100

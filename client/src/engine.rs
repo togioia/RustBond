@@ -275,15 +275,19 @@ async fn serve_tcp(
         let route_id = route.id;
 
         tokio::spawn(async move {
+            // Register the inbound channel BEFORE opening the stream: the target
+            // may answer immediately (TLS alert, HTTP 404) and those first
+            // frames would otherwise be dropped.
+            let (dtx, mut drx) = mpsc::unbounded_channel::<Vec<u8>>();
+            shared.tcp_in.lock().await.insert(stream_id, dtx);
+
             let Some(idx) = open_stream(&pool, &shared, stream_id, route_id, kind::TCP_OPEN).await
             else {
+                shared.tcp_in.lock().await.remove(&stream_id);
                 eprintln!("stream {stream_id} ({peer}): no transport available");
                 set_status(&status, "no transport available".to_string());
                 return;
             };
-
-            let (dtx, mut drx) = mpsc::unbounded_channel::<Vec<u8>>();
-            shared.tcp_in.lock().await.insert(stream_id, dtx);
 
             let (mut lr, mut lw) = split(local);
 
