@@ -104,7 +104,9 @@ jobs:
         with:
           context: .
           file: server/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # Solo amd64: il deployment e' pinnato su algios-b602. Riabilita
+          # linux/arm64 quando il nodo oracle inoltrera' correttamente i dati.
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ github.ref_name }}
