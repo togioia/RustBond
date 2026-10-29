@@ -108,7 +108,6 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ github.ref_name }}
-            ${{ env.IMAGE }}:0.1.0
             ${{ env.IMAGE }}:latest
 
   release:
