@@ -16,6 +16,14 @@ LOG="$WORK/gui.log"
 mkdir -p "$WORK" || exit 1
 cd "$WORK" || exit 1
 
+# Chiudi subito l'istanza precedente: scompattare sopra un'app in esecuzione
+# lascia in vita il processo vecchio, che continua a usare il binario vecchio.
+if pgrep -x RustBond >/dev/null 2>&1; then
+    echo "      chiudo l'istanza RustBond in esecuzione"
+    pkill -x RustBond 2>/dev/null || true
+    sleep 1
+fi
+
 echo "[1/5] scarico $VERSION"
 if ! curl -fsSL -o app.zip "$BASE/RustBond-macos-universal.zip"; then
     echo "download fallito: controlla VERSION=$VERSION"
@@ -24,6 +32,13 @@ fi
 rm -rf "$APP"
 unzip -oq app.zip
 chmod +x "$BIN"
+# Guardia anti-regressione: la 0.3.0 conteneva il vetro nativo che sfocava la
+# UI. Se il marker e' ancora nel binario, l'estrazione non ha sostituito l'app.
+if strings "$BIN" 2>/dev/null | grep -q "ui: liquid glass"; then
+    echo "ERRORE: il binario contiene ancora il vetro nativo (build 0.3.0)."
+    echo "        Rimuovi $WORK e rilancia, oppure controlla VERSION=$VERSION"
+    exit 1
+fi
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 codesign --verify --deep --strict "$APP" 2>/dev/null && echo "      firma ad-hoc valida"
 
