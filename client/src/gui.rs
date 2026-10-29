@@ -336,7 +336,10 @@ impl eframe::App for BondApp {
                 .id_source("ifaces")
                 .show(ui, |ui| {
                     for (iface, on) in self.interfaces.iter().zip(self.selected.iter_mut()) {
-                        ui.checkbox(on, format!("{}  ({})", iface.name, iface.ip));
+                        ui.add_enabled(
+                            iface.ip.is_some(),
+                            egui::Checkbox::new(on, iface.display()),
+                        );
                     }
                 });
             ui.horizontal(|ui| {

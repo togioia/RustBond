@@ -392,11 +392,17 @@ fn build_slots(interfaces: &[String]) -> Vec<Arc<Slot>> {
 
     for name in interfaces {
         match available.iter().find(|i| &i.name == name) {
-            Some(iface) => slots.push(Arc::new(Slot {
-                label: format!("{} ({})", iface.name, iface.ip),
-                local_ip: Some(iface.ip),
-                tx: Mutex::new(None),
-            })),
+            Some(iface) => {
+                let Some(ip) = iface.ip else {
+                    eprintln!("interface {name} has no IPv4 address, skipping");
+                    continue;
+                };
+                slots.push(Arc::new(Slot {
+                    label: iface.display(),
+                    local_ip: Some(ip),
+                    tx: Mutex::new(None),
+                }));
+            }
             None => eprintln!("interface {name} not found, skipping"),
         }
     }
