@@ -117,6 +117,7 @@ fn load_config(path: &str) -> AppConfig {
                 key: String::new(),
                 interfaces: Vec::new(),
                 proxy_port: None,
+                auto_proxy: false,
                 routes: Vec::new(),
             }
         }

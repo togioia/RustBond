@@ -152,8 +152,18 @@ pub struct AppConfig {
     /// Client-only: expose a local SOCKS5 proxy on `127.0.0.1:<port>`.
     #[serde(default)]
     pub proxy_port: Option<u16>,
+    /// Client-only (macOS): point the system SOCKS proxy at `proxy_port` while
+    /// the tunnel is running, and restore the previous settings on stop. This
+    /// is what makes Safari/Chrome (and every app using the system proxy) go
+    /// through the bond without manual configuration.
+    #[serde(default = "default_true")]
+    pub auto_proxy: bool,
     #[serde(default)]
     pub routes: Vec<RouteCfg>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl AppConfig {
@@ -163,6 +173,7 @@ impl AppConfig {
             key: "change-me-please".into(),
             interfaces: vec![],
             proxy_port: None,
+            auto_proxy: true,
             routes: vec![
                 RouteCfg {
                     id: 1,

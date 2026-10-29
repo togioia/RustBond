@@ -3,6 +3,7 @@
 mod config;
 mod engine;
 mod net;
+mod sysproxy;
 
 #[cfg(feature = "gui")]
 mod gui;
@@ -37,5 +38,25 @@ fn main() -> Result<()> {
         cfg.routes.len()
     );
 
-    rt.block_on(engine::run(cfg, engine::new_status()))
+    // Headless behaves like the GUI: the system proxy follows the tunnel.
+    let _proxy = if cfg.auto_proxy {
+        match cfg.proxy_port {
+            Some(port) => match sysproxy::enable("127.0.0.1", port) {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    eprintln!("system proxy: {e:#}");
+                    None
+                }
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    rt.block_on(engine::run(
+        cfg,
+        engine::new_status(),
+        engine::StatsHandle::default(),
+    ))
 }

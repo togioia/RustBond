@@ -4,7 +4,7 @@
 # Variabili: VERSION=v0.1.3-debug  PSK=<chiave>  WORK=~/rustbond-test
 set -uo pipefail
 
-VERSION="${VERSION:-v0.2.1-debug}"
+VERSION="${VERSION:-v0.3.0-debug}"
 BASE="https://github.com/togioia/RustBond/releases/download/${VERSION}"
 WORK="${WORK:-$HOME/rustbond-test}"
 CFG="$HOME/rustbond.toml"

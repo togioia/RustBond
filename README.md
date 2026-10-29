@@ -18,8 +18,17 @@ nodi edge (k3s, container Alpine, binario statico da ~2 MB).
 - **Fallback multi-target sul relay** (primario + backup, health check TCP).
 - **PSK** condivisa per autenticare il client.
 - **Binario server statico** (`musl`, `scratch` image) per amd64 e arm64.
-- **Menu bar macOS** con finestra minima: URL server, chiave, interfacce, rotte,
-  Start/Stop, salvataggio config.
+- **GUI macOS "liquid glass"**: finestra trasparente senza decorazioni, con
+  vero `NSGlassEffectView` su macOS 26 (vibrancy come fallback), schede in vetro,
+  pill di stato e pulsanti con riflesso speculare.
+- **Contatori per link in tempo reale**: per ogni interfaccia vedi byte inviati e
+  ricevuti, percentuale di traffico e stato del link; totale complessivo e reset.
+- **Proxy di sistema automatico (stile WireGuard)**: al via la GUI imposta il
+  proxy SOCKS di macOS (`networksetup`) su tutte le interfacce attive, allo stop
+  ripristina esattamente le impostazioni precedenti. Safari/Chrome passano dal
+  bond senza configurazione manuale.
+- **Menu bar macOS**: URL server, chiave, interfacce, rotte, Start/Stop,
+  salvataggio config, finestra riducibile nella barra dei menu.
 
 ## Struttura
 
@@ -39,6 +48,8 @@ File TOML, usato sia dal client sia dal server (ognuno legge ciò che gli serve)
 server_addr = "vps.example.com:5000"
 key = "cambia-questa-chiave"
 interfaces = ["en0", "en1"]      # solo client, vuoto = route di sistema
+proxy_port = 11080                # solo client: SOCKS5 locale su 127.0.0.1
+auto_proxy = true                 # solo client macOS: gestisce il proxy di sistema
 
 [[routes]]
 id = 1                            # id stabile 1..65000

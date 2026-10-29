@@ -9,7 +9,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
     sync::{
-        atomic::{AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -33,6 +33,76 @@ pub fn new_status() -> StatusHandle {
     Arc::new(StdMutex::new("idle".to_string()))
 }
 
+// ---------------------------------------------------------------------------
+// Per-link traffic counters (shown in the GUI)
+// ---------------------------------------------------------------------------
+
+/// Live counters for one transport (one interface).
+#[derive(Default)]
+pub struct LinkStat {
+    pub label: String,
+    pub tx: AtomicU64,
+    pub rx: AtomicU64,
+    pub connected: AtomicBool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LinkSnapshot {
+    pub label: String,
+    pub connected: bool,
+    pub tx: u64,
+    pub rx: u64,
+}
+
+/// Shared list of [`LinkStat`]s between the engine and the UI. Entries are
+/// keyed by interface label and survive stop/start, so the totals stay
+/// cumulative until the user resets them.
+#[derive(Clone, Default)]
+pub struct StatsHandle(Arc<StdMutex<Vec<Arc<LinkStat>>>>);
+
+impl StatsHandle {
+    pub fn snapshot(&self) -> Vec<LinkSnapshot> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|s| LinkSnapshot {
+                label: s.label.clone(),
+                connected: s.connected.load(Ordering::Relaxed),
+                tx: s.tx.load(Ordering::Relaxed),
+                rx: s.rx.load(Ordering::Relaxed),
+            })
+            .collect()
+    }
+
+    pub fn reset(&self) {
+        for s in self.0.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            s.tx.store(0, Ordering::Relaxed);
+            s.rx.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Mark every known link as disconnected (called when the engine stops).
+    pub fn disconnect_all(&self) {
+        for s in self.0.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            s.connected.store(false, Ordering::Relaxed);
+        }
+    }
+
+    fn entry(&self, label: &str) -> Arc<LinkStat> {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(found) = guard.iter().find(|s| s.label == label) {
+            return found.clone();
+        }
+        let stat = Arc::new(LinkStat {
+            label: label.to_string(),
+            ..Default::default()
+        });
+        guard.push(stat.clone());
+        stat
+    }
+}
+
 fn set_status(handle: &StatusHandle, msg: impl Into<String>) {
     if let Ok(mut g) = handle.lock() {
         *g = msg.into();
@@ -54,6 +124,7 @@ struct Slot {
     label: String,
     local_ip: Option<IpAddr>,
     tx: Mutex<Option<WriterTx>>,
+    stat: Arc<LinkStat>,
 }
 
 #[derive(Clone)]
@@ -103,6 +174,7 @@ async fn open_transport(
     key: &str,
     local_ip: Option<IpAddr>,
     shared: Arc<Shared>,
+    stat: Arc<LinkStat>,
 ) -> Result<WriterTx> {
     let stream = net::connect(server, local_ip).await?;
     let (mut rh, mut wh) = split(stream);
@@ -117,22 +189,36 @@ async fn open_transport(
         ));
     }
 
+    stat.connected.store(true, Ordering::Relaxed);
+
     let (tx, mut rx) = mpsc::unbounded_channel::<(u32, u8, Vec<u8>)>();
+    let tx_stat = stat.clone();
     tokio::spawn(async move {
         while let Some((stream_id, kind, payload)) = rx.recv().await {
             if write_frame(&mut wh, stream_id, kind, &payload).await.is_err() {
                 break;
             }
+            tx_stat
+                .tx
+                .fetch_add(payload.len() as u64 + 9, Ordering::Relaxed);
         }
+        tx_stat.connected.store(false, Ordering::Relaxed);
     });
 
+    let rx_stat = stat;
     tokio::spawn(async move {
         loop {
             match read_frame(&mut rh).await {
-                Ok(frame) => dispatch(frame, &shared).await,
+                Ok(frame) => {
+                    rx_stat
+                        .rx
+                        .fetch_add(frame.payload.len() as u64 + 9, Ordering::Relaxed);
+                    dispatch(frame, &shared).await;
+                }
                 Err(_) => break,
             }
         }
+        rx_stat.connected.store(false, Ordering::Relaxed);
     });
 
     Ok(tx)
@@ -199,7 +285,15 @@ fn spawn_supervisors(
                 };
                 if !alive {
                     *slot.tx.lock().await = None;
-                    match open_transport(&server, &key, slot.local_ip, shared.clone()).await {
+                    match open_transport(
+                        &server,
+                        &key,
+                        slot.local_ip,
+                        shared.clone(),
+                        slot.stat.clone(),
+                    )
+                    .await
+                    {
                         Ok(tx) => {
                             *slot.tx.lock().await = Some(tx);
                             eprintln!("[{}] connected to {server}", slot.label);
@@ -381,16 +475,21 @@ async fn serve_udp(
 }
 
 /// Build the transport pool from the configured interfaces.
-fn build_slots(interfaces: &[String]) -> Vec<Arc<Slot>> {
+fn build_slots(interfaces: &[String], stats: &StatsHandle) -> Vec<Arc<Slot>> {
     let available = net::list();
     let mut slots = Vec::new();
 
-    if interfaces.is_empty() {
+    let add = |slots: &mut Vec<Arc<Slot>>, label: String, local_ip: Option<IpAddr>| {
         slots.push(Arc::new(Slot {
-            label: "auto".into(),
-            local_ip: None,
+            stat: stats.entry(&label),
+            label,
+            local_ip,
             tx: Mutex::new(None),
         }));
+    };
+
+    if interfaces.is_empty() {
+        add(&mut slots, "auto".into(), None);
         return slots;
     }
 
@@ -401,11 +500,7 @@ fn build_slots(interfaces: &[String]) -> Vec<Arc<Slot>> {
                     eprintln!("interface {name} has no IPv4 address, skipping");
                     continue;
                 };
-                slots.push(Arc::new(Slot {
-                    label: iface.display(),
-                    local_ip: Some(ip),
-                    tx: Mutex::new(None),
-                }));
+                add(&mut slots, iface.display(), Some(ip));
             }
             None => eprintln!("interface {name} not found, skipping"),
         }
@@ -413,23 +508,23 @@ fn build_slots(interfaces: &[String]) -> Vec<Arc<Slot>> {
 
     if slots.is_empty() {
         eprintln!("none of the selected interfaces exists, falling back to auto");
-        slots.push(Arc::new(Slot {
-            label: "auto".into(),
-            local_ip: None,
-            tx: Mutex::new(None),
-        }));
+        add(&mut slots, "auto".into(), None);
     }
     slots
 }
 
 /// Run the engine until the future is dropped (i.e. the task is aborted).
-pub async fn run(cfg: AppConfig, status: StatusHandle) -> Result<()> {
+pub async fn run(cfg: AppConfig, status: StatusHandle, stats: StatsHandle) -> Result<()> {
     if cfg.key.is_empty() {
         return Err(anyhow!("empty key"));
     }
     if cfg.routes.is_empty() && cfg.proxy_port.is_none() {
         return Err(anyhow!("no routes and no proxy_port configured"));
     }
+
+    // Keep the cumulative totals, but no link is connected until a transport
+    // comes up again.
+    stats.disconnect_all();
 
     let shared = Arc::new(Shared {
         open_ack: Mutex::new(HashMap::new()),
@@ -439,7 +534,7 @@ pub async fn run(cfg: AppConfig, status: StatusHandle) -> Result<()> {
     });
 
     let pool = Pool {
-        slots: Arc::new(build_slots(&cfg.interfaces)),
+        slots: Arc::new(build_slots(&cfg.interfaces, &stats)),
         rr: Arc::new(AtomicUsize::new(0)),
     };
     eprintln!(
