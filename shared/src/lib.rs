@@ -26,6 +26,8 @@ pub mod kind {
     pub const TCP_OPEN_ERR: u8 = 0x06;
     pub const TCP_DATA: u8 = 0x07;
     pub const TCP_CLOSE: u8 = 0x08;
+    /// Open a stream towards an arbitrary destination (SOCKS5 mode).
+    pub const TCP_OPEN_TO: u8 = 0x0e;
 
     pub const UDP_BIND: u8 = 0x09;
     pub const UDP_DATA: u8 = 0x0a;
@@ -91,6 +93,29 @@ pub fn parse_route(payload: &[u8]) -> Result<u16> {
     Ok(u16::from_be_bytes([payload[0], payload[1]]))
 }
 
+/// SOCKS5-style destination: `[len:u8][host][port:u16 BE]`.
+pub fn dest_payload(host: &str, port: u16) -> Vec<u8> {
+    let host = &host.as_bytes()[..host.len().min(255)];
+    let mut out = Vec::with_capacity(host.len() + 3);
+    out.push(host.len() as u8);
+    out.extend_from_slice(host);
+    out.extend_from_slice(&port.to_be_bytes());
+    out
+}
+
+pub fn parse_dest(payload: &[u8]) -> Result<(String, u16)> {
+    if payload.is_empty() {
+        return Err(anyhow!("empty destination"));
+    }
+    let n = payload[0] as usize;
+    if payload.len() != n + 3 {
+        return Err(anyhow!("invalid destination payload"));
+    }
+    let host = String::from_utf8(payload[1..1 + n].to_vec())?;
+    let port = u16::from_be_bytes([payload[1 + n], payload[2 + n]]);
+    Ok((host, port))
+}
+
 // ---------------------------------------------------------------------------
 // Configuration (shared file format between client and server)
 // ---------------------------------------------------------------------------
@@ -124,6 +149,9 @@ pub struct AppConfig {
     /// Empty = let the OS choose the route.
     #[serde(default)]
     pub interfaces: Vec<String>,
+    /// Client-only: expose a local SOCKS5 proxy on `127.0.0.1:<port>`.
+    #[serde(default)]
+    pub proxy_port: Option<u16>,
     #[serde(default)]
     pub routes: Vec<RouteCfg>,
 }
@@ -134,6 +162,7 @@ impl AppConfig {
             server_addr: "127.0.0.1:5000".into(),
             key: "change-me-please".into(),
             interfaces: vec![],
+            proxy_port: None,
             routes: vec![
                 RouteCfg {
                     id: 1,

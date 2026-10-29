@@ -106,6 +106,7 @@ struct BondApp {
     selected: Vec<bool>,
     routes: Vec<RouteRow>,
     status: engine::StatusHandle,
+    proxy_port: Option<u16>,
     handle: Option<tokio::task::AbortHandle>,
     running: bool,
     visible: bool,
@@ -149,6 +150,7 @@ impl BondApp {
             handle: None,
             running: false,
             visible: true,
+            proxy_port: cfg.proxy_port,
             message: String::new(),
             #[cfg(feature = "tray")]
             tray: None,
@@ -161,6 +163,7 @@ impl BondApp {
         AppConfig {
             server_addr: self.server_addr.trim().to_string(),
             key: self.key.clone(),
+            proxy_port: self.proxy_port,
             interfaces: self
                 .interfaces
                 .iter()

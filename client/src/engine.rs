@@ -15,11 +15,11 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
-use rnb_shared::{kind, read_frame, route_payload, write_frame, AppConfig, Frame, Proto};
+use anyhow::{anyhow, bail, Result};
+use rnb_shared::{dest_payload, kind, read_frame, route_payload, write_frame, AppConfig, Frame, Proto};
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UdpSocket},
+    net::{TcpListener, TcpStream, UdpSocket},
     sync::{mpsc, oneshot, Mutex},
     time::timeout,
 };
@@ -222,8 +222,8 @@ async fn open_stream(
     pool: &Pool,
     shared: &Arc<Shared>,
     stream_id: u32,
-    route_id: u16,
     kind_open: u8,
+    payload: Vec<u8>,
 ) -> Option<usize> {
     let n = pool.len();
     let start = pool.next();
@@ -232,7 +232,7 @@ async fn open_stream(
         let (ack_tx, ack_rx) = oneshot::channel();
         shared.open_ack.lock().await.insert(stream_id, ack_tx);
         if !pool
-            .send_on(idx, stream_id, kind_open, route_payload(route_id))
+            .send_on(idx, stream_id, kind_open, payload.clone())
             .await
         {
             shared.open_ack.lock().await.remove(&stream_id);
@@ -281,7 +281,7 @@ async fn serve_tcp(
             let (dtx, mut drx) = mpsc::unbounded_channel::<Vec<u8>>();
             shared.tcp_in.lock().await.insert(stream_id, dtx);
 
-            let Some(idx) = open_stream(&pool, &shared, stream_id, route_id, kind::TCP_OPEN).await
+            let Some(idx) = open_stream(&pool, &shared, stream_id, kind::TCP_OPEN, route_payload(route_id)).await
             else {
                 shared.tcp_in.lock().await.remove(&stream_id);
                 eprintln!("stream {stream_id} ({peer}): no transport available");
@@ -347,7 +347,7 @@ async fn serve_udp(
     // Retry until a transport accepts the bind: at startup the supervisor may
     // still be connecting, and returning here would leave UDP dead forever.
     let mut bound_on = loop {
-        match open_stream(&pool, &shared, stream_id, route.id, kind::UDP_BIND).await {
+        match open_stream(&pool, &shared, stream_id, kind::UDP_BIND, route_payload(route.id)).await {
             Some(idx) => break idx,
             None => {
                 set_status(&status, format!("udp route {}: waiting for transport", route.id));
@@ -366,7 +366,7 @@ async fn serve_udp(
         {
             // Transport died: the server-side UDP socket is gone too, rebind.
             set_status(&status, format!("udp route {}: rebinding", route.id));
-            match open_stream(&pool, &shared, stream_id, route.id, kind::UDP_BIND).await {
+            match open_stream(&pool, &shared, stream_id, kind::UDP_BIND, route_payload(route.id)).await {
                 Some(idx) => bound_on = idx,
                 None => {
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -423,8 +423,8 @@ pub async fn run(cfg: AppConfig, status: StatusHandle) -> Result<()> {
     if cfg.key.is_empty() {
         return Err(anyhow!("empty key"));
     }
-    if cfg.routes.is_empty() {
-        return Err(anyhow!("no routes configured"));
+    if cfg.routes.is_empty() && cfg.proxy_port.is_none() {
+        return Err(anyhow!("no routes and no proxy_port configured"));
     }
 
     let shared = Arc::new(Shared {
@@ -502,6 +502,19 @@ pub async fn run(cfg: AppConfig, status: StatusHandle) -> Result<()> {
         }
     }
 
+    if let Some(port) = cfg.proxy_port {
+        let pool = pool.clone();
+        let shared = shared.clone();
+        let next_sid = next_sid.clone();
+        let status = status.clone();
+        tokio::spawn(async move {
+            if let Err(e) = serve_socks(port, pool, shared, next_sid, status.clone()).await {
+                eprintln!("socks error: {e:#}");
+                set_status(&status, format!("socks error: {e:#}"));
+            }
+        });
+    }
+
     // Keep-alive on the control stream.
     {
         let pool = pool.clone();
@@ -515,5 +528,150 @@ pub async fn run(cfg: AppConfig, status: StatusHandle) -> Result<()> {
 
     set_status(&status, "running".to_string());
     std::future::pending::<()>().await;
+    Ok(())
+}
+
+/// Minimal SOCKS5 proxy (CONNECT only, no auth) on 127.0.0.1.
+async fn serve_socks(
+    port: u16,
+    pool: Pool,
+    shared: Arc<Shared>,
+    next_sid: Arc<AtomicU32>,
+    status: StatusHandle,
+) -> Result<()> {
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .await
+        .map_err(|e| anyhow!("cannot listen on 127.0.0.1:{port}: {e}"))?;
+    eprintln!("socks5 in ascolto su 127.0.0.1:{port}");
+    set_status(&status, format!("socks5 127.0.0.1:{port}"));
+
+    loop {
+        let (local, peer) = listener.accept().await?;
+        local.set_nodelay(true).ok();
+        let pool = pool.clone();
+        let shared = shared.clone();
+        let next_sid = next_sid.clone();
+        tokio::spawn(async move {
+            if let Err(e) = socks_conn(local, pool, shared, next_sid).await {
+                eprintln!("socks {peer}: {e:#}");
+            }
+        });
+    }
+}
+
+async fn socks_conn(
+    mut local: TcpStream,
+    pool: Pool,
+    shared: Arc<Shared>,
+    next_sid: Arc<AtomicU32>,
+) -> Result<()> {
+    // greeting
+    let mut hdr = [0u8; 2];
+    local.read_exact(&mut hdr).await?;
+    if hdr[0] != 0x05 {
+        bail!("not a SOCKS5 client");
+    }
+    let mut methods = vec![0u8; hdr[1] as usize];
+    local.read_exact(&mut methods).await?;
+    local.write_all(&[0x05, 0x00]).await?; // no auth
+
+    // request
+    let mut req = [0u8; 4];
+    local.read_exact(&mut req).await?;
+    if req[0] != 0x05 || req[1] != 0x01 {
+        local
+            .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .ok();
+        bail!("only CONNECT is supported");
+    }
+
+    let host = match req[3] {
+        0x01 => {
+            let mut a = [0u8; 4];
+            local.read_exact(&mut a).await?;
+            std::net::Ipv4Addr::from(a).to_string()
+        }
+        0x03 => {
+            let mut len = [0u8; 1];
+            local.read_exact(&mut len).await?;
+            let mut host = vec![0u8; len[0] as usize];
+            local.read_exact(&mut host).await?;
+            String::from_utf8(host)?
+        }
+        0x04 => {
+            let mut a = [0u8; 16];
+            local.read_exact(&mut a).await?;
+            std::net::Ipv6Addr::from(a).to_string()
+        }
+        _ => {
+            local
+                .write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await
+                .ok();
+            bail!("unsupported address type");
+        }
+    };
+    let mut port_bytes = [0u8; 2];
+    local.read_exact(&mut port_bytes).await?;
+    let port = u16::from_be_bytes(port_bytes);
+
+    let stream_id = next_sid.fetch_add(2, Ordering::Relaxed);
+    let (dtx, mut drx) = mpsc::unbounded_channel::<Vec<u8>>();
+    shared.tcp_in.lock().await.insert(stream_id, dtx);
+
+    let Some(idx) = open_stream(
+        &pool,
+        &shared,
+        stream_id,
+        kind::TCP_OPEN_TO,
+        dest_payload(&host, port),
+    )
+    .await
+    else {
+        shared.tcp_in.lock().await.remove(&stream_id);
+        local
+            .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .ok();
+        bail!("cannot open {host}:{port}");
+    };
+
+    local
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+
+    let (mut lr, mut lw) = split(local);
+    let up = {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 32 * 1024];
+            loop {
+                match lr.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if !pool
+                            .send_on(idx, stream_id, kind::TCP_DATA, buf[..n].to_vec())
+                            .await
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = pool.send_on(idx, stream_id, kind::TCP_CLOSE, Vec::new()).await;
+        })
+    };
+    let down = tokio::spawn(async move {
+        while let Some(chunk) = drx.recv().await {
+            if lw.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+        let _ = lw.shutdown().await;
+    });
+    let _ = tokio::join!(up, down);
+    shared.tcp_in.lock().await.remove(&stream_id);
     Ok(())
 }

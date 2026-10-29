@@ -4,7 +4,7 @@
 # Vars: VERSION=v0.1.3-debug  PSK=<chiave>  WORK=~/rustbond-test
 set -uo pipefail
 
-VERSION="${VERSION:-v0.1.4-debug}"
+VERSION="${VERSION:-v0.2.0-debug}"
 BASE="https://github.com/togioia/RustBond/releases/download/${VERSION}"
 WORK="${WORK:-$HOME/rustbond-test}"
 APP="$WORK/RustBond.app"
@@ -42,6 +42,7 @@ cat >"$CFG" <<EOF
 server_addr = "130.110.10.154:5000"
 key = "$PSK"
 interfaces = []
+proxy_port = 11080
 
 [[routes]]
 id = 1
@@ -93,6 +94,7 @@ cat <<'EOT'
     curl -sk -o /dev/null -w 'apiserver %{http_code}\n' https://127.0.0.1:15443/version
     curl -s  -o /dev/null -w 'traefik   %{http_code}\n' http://127.0.0.1:18080/
     dig @127.0.0.1 -p 15353 kubernetes.default.svc.cluster.local +short
+    curl -sx socks5h://127.0.0.1:11080 -o /dev/null -w 'socks     %{http_code}\n' --max-time 15 https://example.com/
 EOT
 echo
 echo "Stop: pkill -x RustBond    |    Config GUI: \"$CFG\""

@@ -85,6 +85,8 @@ spec:
               value: "0.0.0.0:5000"
             - name: CONFIG
               value: /etc/rustbond/config.toml
+            - name: RNB_ALLOW
+              value: "example.com,cloudflare.com,fast.com,netflix.com,nflxso.net,nflxvideo.net"
             - name: RNB_KEY
               valueFrom:
                 secretKeyRef:

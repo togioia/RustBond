@@ -16,7 +16,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use rnb_shared::{
-    key_ok, kind, parse_route, read_frame, write_frame, AppConfig, Frame, Proto,
+    key_ok, kind, parse_dest, parse_route, read_frame, write_frame, AppConfig, Frame, Proto,
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt},
@@ -116,6 +116,7 @@ fn load_config(path: &str) -> AppConfig {
                 server_addr: String::new(),
                 key: String::new(),
                 interfaces: Vec::new(),
+                proxy_port: None,
                 routes: Vec::new(),
             }
         }
@@ -188,6 +189,34 @@ async fn dial(route: &Route) -> Result<(TcpStream, String)> {
         }
     }
     Err(last_err)
+}
+
+fn allowlist() -> Vec<String> {
+    std::env::var("RNB_ALLOW")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn dest_allowed(allow: &[String], host: &str) -> bool {
+    if allow.iter().any(|a| a == "*") {
+        return true;
+    }
+    let host = host.to_ascii_lowercase();
+    allow
+        .iter()
+        .any(|a| host == *a || host.ends_with(&format!(".{a}")))
+}
+
+async fn dial_host(host: &str, port: u16) -> Result<(TcpStream, String)> {
+    let target = format!("{host}:{port}");
+    match timeout(Duration::from_secs(5), TcpStream::connect(&target)).await {
+        Ok(Ok(stream)) => Ok((stream, target)),
+        Ok(Err(e)) => Err(anyhow::anyhow!("{target}: {e}")),
+        Err(_) => Err(anyhow::anyhow!("{target}: connect timeout")),
+    }
 }
 
 async fn handle_client(
@@ -269,6 +298,37 @@ async fn handle_client(
             }
             kind::TCP_CLOSE => {
                 close_stream(&mut tasks, &mut tcp_sinks, &mut udp_sinks, frame.stream_id);
+            }
+            kind::TCP_OPEN_TO => {
+                let (host, port) = parse_dest(&frame.payload)?;
+                let stream_id = frame.stream_id;
+                let allow = allowlist();
+                if !dest_allowed(&allow, &host) {
+                    eprintln!("[{peer}] stream {stream_id}: destination {host} not allowed");
+                    let _ = wtx.send((
+                        stream_id,
+                        kind::TCP_OPEN_ERR,
+                        b"destination not allowed".to_vec(),
+                    ));
+                    continue;
+                }
+                match dial_host(&host, port).await {
+                    Ok((target, addr)) => {
+                        eprintln!("[{peer}] stream {stream_id} -> {addr} (socks)");
+                        let _ = wtx.send((stream_id, kind::TCP_OPEN_OK, Vec::new()));
+                        tasks.insert(
+                            stream_id,
+                            spawn_tcp_relay(stream_id, target, wtx.clone(), &mut tcp_sinks),
+                        );
+                    }
+                    Err(e) => {
+                        let _ = wtx.send((
+                            stream_id,
+                            kind::TCP_OPEN_ERR,
+                            format!("{e:#}").into_bytes(),
+                        ));
+                    }
+                }
             }
             kind::UDP_BIND => {
                 let route_id = parse_route(&frame.payload)?;
