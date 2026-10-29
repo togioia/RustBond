@@ -240,6 +240,10 @@ async fn open_stream(
         }
         match timeout(Duration::from_secs(5), ack_rx).await {
             Ok(Ok(true)) => return Some(idx),
+            // The server explicitly rejected this stream (bad route, allowlist,
+            // target down): retrying on another transport would just duplicate
+            // the request, so give up here.
+            Ok(Ok(false)) => return None,
             _ => {
                 shared.open_ack.lock().await.remove(&stream_id);
             }
