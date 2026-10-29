@@ -78,7 +78,7 @@ spec:
                     app.kubernetes.io/name: rustbond
       containers:
         - name: server
-          image: ghcr.io/togioia/rustbond:0.2.0
+          image: ghcr.io/togioia/rustbond:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: LISTEN
