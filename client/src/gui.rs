@@ -57,57 +57,22 @@ pub fn run(rt: tokio::runtime::Runtime, cfg: AppConfig) -> Result<()> {
         "RustBond",
         options,
         Box::new(move |cc| {
-            let vibrant = apply_glass(cc);
+            // NOTE: we do not attach NSVisualEffectView/NSGlassEffectView.
+            // eframe's glow renderer paints into the window's content view, and
+            // AppKit subviews are composited *above* it: the blur layer would
+            // smear the whole UI (regression seen in 0.3.0). The glass look is
+            // painted by egui instead; real backdrop blur needs the wgpu
+            // renderer, planned separately.
             cc.egui_ctx.set_visuals(glass_visuals());
             cc.egui_ctx.style_mut(|st| {
                 st.spacing.item_spacing = Vec2::new(8.0, 6.0);
                 st.spacing.button_padding = Vec2::new(10.0, 6.0);
                 st.spacing.interact_size.y = 26.0;
             });
-            let mut app = app;
-            app.vibrant = vibrant;
             Ok(Box::new(app) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))
-}
-
-/// Ask AppKit for the glass backdrop. Returns whether a blur layer is active.
-#[cfg(target_os = "macos")]
-fn apply_glass(cc: &eframe::CreationContext<'_>) -> bool {
-    use window_vibrancy::{
-        apply_liquid_glass, apply_vibrancy, LiquidGlassOptions, NSGlassEffectViewStyle,
-        NSVisualEffectMaterial, NSVisualEffectState,
-    };
-
-    if apply_liquid_glass(
-        cc,
-        LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular)
-            .radius(RADIUS as f64)
-            .opaque(false),
-    )
-    .is_ok()
-    {
-        eprintln!("ui: liquid glass (macOS 26)");
-        return true;
-    }
-    if apply_vibrancy(
-        cc,
-        NSVisualEffectMaterial::HudWindow,
-        Some(NSVisualEffectState::Active),
-        Some(RADIUS as f64),
-    )
-    .is_ok()
-    {
-        eprintln!("ui: vibrancy (fallback)");
-        return true;
-    }
-    false
-}
-
-#[cfg(not(target_os = "macos"))]
-fn apply_glass(_cc: &eframe::CreationContext<'_>) -> bool {
-    false
 }
 
 fn glass_visuals() -> egui::Visuals {
@@ -228,7 +193,6 @@ struct BondApp {
     handle: Option<tokio::task::AbortHandle>,
     running: bool,
     visible: bool,
-    vibrant: bool,
     message: String,
     #[cfg(feature = "tray")]
     tray: Option<Tray>,
@@ -274,7 +238,6 @@ impl BondApp {
             handle: None,
             running: false,
             visible: true,
-            vibrant: false,
             message: String::new(),
             #[cfg(feature = "tray")]
             tray: None,
@@ -468,7 +431,7 @@ impl eframe::App for BondApp {
                     .inner_margin(Margin::same(26.0)),
             )
             .show(ctx, |ui| {
-                paint_backdrop(ui.painter(), screen.shrink(PANEL_MARGIN), self.vibrant);
+                paint_backdrop(ui.painter(), screen.shrink(PANEL_MARGIN));
                 self.body(ui, ctx);
             });
 
@@ -713,7 +676,7 @@ enum BtnKind {
     Danger,
 }
 
-fn paint_backdrop(painter: &egui::Painter, rect: Rect, vibrant: bool) {
+fn paint_backdrop(painter: &egui::Painter, rect: Rect) {
     for (grow, alpha) in [(3.0f32, 24u8), (7.0, 14), (12.0, 8), (18.0, 4)] {
         painter.rect_filled(
             rect.expand(grow),
@@ -722,11 +685,9 @@ fn paint_backdrop(painter: &egui::Painter, rect: Rect, vibrant: bool) {
         );
     }
 
-    let base = if vibrant {
-        Color32::from_rgba_unmultiplied(14, 18, 30, 130)
-    } else {
-        Color32::from_rgba_unmultiplied(14, 18, 30, 246)
-    };
+    // Opaque: text must stay crisp. The "glass" is in the highlights,
+    // translucency of the cards and the specular edges.
+    let base = Color32::from_rgb(15, 19, 30);
     painter.rect(
         rect,
         Rounding::same(RADIUS),
